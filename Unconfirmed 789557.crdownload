@@ -1,0 +1,363 @@
+import tkinter as tk
+from tkinter import messagebox, filedialog, ttk
+from datetime import datetime, timedelta
+import mysql.connector
+import csv
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from sklearn.linear_model import LinearRegression
+import numpy as np
+
+# ------------- Database & Backend -------------
+def get_connection():
+    return mysql.connector.connect(host="localhost", user="root", password="root123", database="628db")
+
+def add_expense(title, amount, category, date):
+    try:
+        db = get_connection()
+        cursor = db.cursor()
+        query = """INSERT INTO Expenses (expense_title, expense_amt, expense_category, expense_date) \
+                   VALUES (%s, %s, %s, %s)"""
+        values = (title, amount, category, date)
+        cursor.execute(query, values)
+        db.commit()
+        cursor.close()
+        db.close()
+        return True
+    except Exception as e:
+        print("Error:", e)
+        return False
+
+def update_expense(expense_id, title, amount, category, date):
+    try:
+        db = get_connection()
+        cursor = db.cursor()
+        query = """UPDATE Expenses 
+                   SET expense_title = %s, expense_amt = %s, expense_category = %s, expense_date = %s 
+                   WHERE expense_id = %s"""
+        cursor.execute(query, (title, amount, category, date, expense_id))
+        db.commit()
+        cursor.close()
+        db.close()
+        return True
+    except Exception as e:
+        print("Error:", e)
+        return False
+
+def delete_expense(expense_id):
+    try:
+        db = get_connection()
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM Expenses WHERE expense_id = %s", (expense_id,))
+        db.commit()
+        cursor.close()
+        db.close()
+        return True
+    except Exception as e:
+        print("Error:", e)
+        return False
+
+def filter_by_category():
+    def show_results():
+        category = cat_entry.get()
+        data = get_expenses_by_category(category)
+        if not data:
+            messagebox.showinfo("No Data", "No expenses for this category.")
+            return
+
+        result_win = tk.Toplevel(root)
+        result_win.title(f"Expenses in {category}")
+
+        tree = ttk.Treeview(result_win, columns=("ID", "Title", "Amount", "Category", "Date"), show='headings')
+        for col in tree["columns"]:
+            tree.heading(col, text=col)
+            tree.column(col, width=100)
+        for row in data:
+            tree.insert("", "end", values=row)
+        tree.pack(fill="both", expand=True)
+
+    cat_win = tk.Toplevel(root)
+    cat_win.title("🔍 Search by Category")
+    tk.Label(cat_win, text="Enter Category:").pack(pady=5)
+    cat_entry = tk.Entry(cat_win)
+    cat_entry.pack()
+    tk.Button(cat_win, text="🔍 Search", command=show_results).pack(pady=5)
+
+
+def get_expenses_by_category(category):
+    try:
+        db = get_connection()
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM Expenses WHERE expense_category = %s", (category,))
+        data = cursor.fetchall()
+        cursor.close()
+        db.close()
+        return data
+    except Exception as e:
+        print("Error:", e)
+        return []
+
+def get_all_expenses():
+    db = get_connection()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM Expenses")
+    data = cursor.fetchall()
+    cursor.close()
+    db.close()
+    return data
+
+def export_to_csv():
+    expenses = get_all_expenses()
+    file_path = filedialog.asksaveasfilename(defaultextension=".csv")
+    if not file_path:
+        return
+    with open(file_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['ID', 'Title', 'Amount', 'Category', 'Date'])
+        for row in expenses:
+            writer.writerow(row)
+    messagebox.showinfo("Exported", f"Data exported to {file_path}")
+def show_expenses_table():
+    def show_summary(period):
+        filtered = get_filtered_expenses(period)
+        if not filtered:
+            messagebox.showinfo("Summary", f"No expenses found for {period}")
+            return
+        total = sum(row[2] for row in filtered)
+        count = len(filtered)
+        avg = total / count if count else 0
+        messagebox.showinfo(f"{period} Summary", f"Total: ₹{total:.2f}\nCount: {count}\nAverage: ₹{avg:.2f}")
+
+    def update_selected():
+        selected = tree.focus()
+        if not selected:
+            messagebox.showerror("Select Expense", "No expense selected.")
+            return
+        values = tree.item(selected, 'values')
+        expense_id = values[0]
+
+        edit_win = tk.Toplevel(root)
+        edit_win.title("✏️ Update Expense")
+
+        tk.Label(edit_win, text="Title").pack()
+        title_entry = tk.Entry(edit_win)
+        title_entry.insert(0, values[1])
+        title_entry.pack()
+
+        tk.Label(edit_win, text="Amount").pack()
+        amt_entry = tk.Entry(edit_win)
+        amt_entry.insert(0, values[2])
+        amt_entry.pack()
+
+        tk.Label(edit_win, text="Category").pack()
+        cat_entry = tk.Entry(edit_win)
+        cat_entry.insert(0, values[3])
+        cat_entry.pack()
+
+        tk.Label(edit_win, text="Date (YYYY-MM-DD)").pack()
+        date_entry = tk.Entry(edit_win)
+        date_entry.insert(0, values[4])
+        date_entry.pack()
+
+        def update():
+            try:
+                updated = update_expense(expense_id, title_entry.get(), float(amt_entry.get()), cat_entry.get(), date_entry.get())
+                if updated:
+                    messagebox.showinfo("Updated", "Expense updated.")
+                    edit_win.destroy()
+                    table_win.destroy()
+                    show_expenses_table()
+                else:
+                    messagebox.showerror("Failed", "Update failed.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Check values. {e}")
+
+        tk.Button(edit_win, text="✅ Update", command=update).pack(pady=5)
+
+    def delete_selected():
+        selected = tree.focus()
+        if not selected:
+            messagebox.showerror("Select Expense", "No expense selected.")
+            return
+        values = tree.item(selected, 'values')
+        expense_id = values[0]
+        if messagebox.askyesno("Confirm Delete", "Are you sure?"):
+            deleted = delete_expense(expense_id)
+            if deleted:
+                messagebox.showinfo("Deleted", "Expense deleted.")
+                tree.delete(selected)
+            else:
+                messagebox.showerror("Error", "Delete failed.")
+
+    data = get_all_expenses()
+    table_win = tk.Toplevel(root)
+    table_win.title("📊 All Expenses")
+    tree = ttk.Treeview(table_win, columns=("ID", "Title", "Amount", "Category", "Date"), show='headings')
+    for col in tree["columns"]:
+        tree.heading(col, text=col)
+        tree.column(col, width=100)
+    for row in data:
+        tree.insert("", "end", values=row)
+    tree.pack(fill="both", expand=True)
+
+    # Buttons
+    btn_frame = tk.Frame(table_win)
+    btn_frame.pack(pady=10)
+
+    tk.Button(btn_frame, text="✏️ Update Selected", command=update_selected,
+              bg="#42a5f5", fg="white", font=("Arial", 10), padx=10).pack(side="left", padx=5)
+    tk.Button(btn_frame, text="🗑️ Delete Selected", command=delete_selected,
+              bg="#ef5350", fg="white", font=("Arial", 10), padx=10).pack(side="left", padx=5)
+    tk.Button(btn_frame, text="📅 Weekly Summary", command=lambda: show_summary("Weekly"),
+              bg="#64b5f6", fg="white", font=("Arial", 10)).pack(side="left", padx=5)
+    tk.Button(btn_frame, text="🗓️ Monthly Summary", command=lambda: show_summary("Monthly"),
+              bg="#81c784", fg="white", font=("Arial", 10)).pack(side="left", padx=5)
+
+def get_filtered_expenses(period, min_amount=None):
+    data = get_all_expenses()
+    today = datetime.today().date()
+    if period == 'Weekly':
+        start_date = today - timedelta(days=7)
+    elif period == 'Monthly':
+        start_date = today - timedelta(days=30)
+    else:
+        return data
+    filtered = [row for row in data if datetime.strptime(str(row[4]), "%Y-%m-%d").date() >= start_date]
+    if min_amount is not None:
+        filtered = [row for row in filtered if row[2] >= min_amount]
+    return filtered
+
+def plot_expenses():
+    def show_plot(period, min_amount=None):
+        data = get_filtered_expenses(period, min_amount)
+        if not data:
+            messagebox.showerror("No Data", f"No data for {period.lower()} view.")
+            return
+
+        # Bar Chart Data
+        date_amounts = {}
+        for row in data:
+            date = str(row[4])
+            date_amounts[date] = date_amounts.get(date, 0) + row[2]
+
+        dates = list(date_amounts.keys())
+        amounts = list(date_amounts.values())
+
+        # Pie Chart Data
+        category_totals = {}
+        for row in data:
+            cat = row[3]
+            category_totals[cat] = category_totals.get(cat, 0) + row[2]
+
+        labels = list(category_totals.keys())
+        sizes = list(category_totals.values())
+
+        # Create Figure
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+        # Bar Graph
+        bars = ax1.bar(dates, amounts, color='skyblue')
+        ax1.set_title(f"{period} Expenses by Date")
+        ax1.set_xticks(range(len(dates)))
+        ax1.set_xticklabels(dates, rotation=45, ha='right')
+        for bar in bars:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width() / 2, height, f'{height:.2f}', ha='center', va='bottom', fontsize=8)
+
+        # Pie Chart
+        ax2.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140)
+        ax2.axis('equal')
+        ax2.set_title(f"{period} Expense Distribution")
+
+        chart_win = tk.Toplevel(root)
+        chart_win.title(f"{period} Expense Summary")
+        canvas = FigureCanvasTkAgg(fig, master=chart_win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def get_filters_and_plot(period):
+        amt = amount_filter_entry.get().strip()
+        min_amt = float(amt) if amt else None
+        show_plot(period, min_amount=min_amt)
+        choice_win.destroy()
+
+    choice_win = tk.Toplevel(root)
+    choice_win.title("Select View and Filters")
+
+    tk.Label(choice_win, text="Optional: Minimum Amount", font=("Arial", 10)).pack()
+    amount_filter_entry = tk.Entry(choice_win)
+    amount_filter_entry.pack()
+
+    tk.Label(choice_win, text="View expense summary for:", font=("Arial", 12)).pack(pady=10)
+    tk.Button(choice_win, text="🗓️ Weekly", command=lambda: get_filters_and_plot('Weekly'),
+              font=("Arial", 12), width=20).pack(pady=5)
+    tk.Button(choice_win, text="📆 Monthly", command=lambda: get_filters_and_plot('Monthly'),
+              font=("Arial", 12), width=20).pack(pady=5)
+
+def predict_expenses():
+    data = get_all_expenses()
+    if len(data) < 2:
+        messagebox.showinfo("Prediction", "Not enough data for prediction.")
+        return
+    X = np.array([datetime.strptime(str(row[4]), "%Y-%m-%d").toordinal() for row in data]).reshape(-1, 1)
+    y = np.array([row[2] for row in data])
+    model = LinearRegression()
+    model.fit(X, y)
+    future_date = datetime.now().toordinal() + 7
+    prediction = model.predict([[future_date]])
+    messagebox.showinfo("Predicted Expense", f"Predicted total next week: ₹{prediction[0]:.2f}")
+
+# ------------- Submit Expense Function -------------
+def submit_expense():
+    title = title_entry.get()
+    amount = amount_entry.get()
+    category = category_entry.get()
+    date = date_entry.get()
+    try:
+        amount = float(amount)
+        datetime.strptime(date, "%Y-%m-%d")
+        success = add_expense(title, amount, category, date)
+        if success:
+            messagebox.showinfo("Success", "Expense added successfully!")
+        else:
+            messagebox.showerror("Error", "Failed to add expense.")
+    except ValueError:
+        messagebox.showerror("Input Error", "Check amount or date format (YYYY-MM-DD).")
+
+# ------------- GUI Setup -------------
+root = tk.Tk()
+root.title("💸 Finance Tracker")
+root.geometry("450x540")
+root.configure(bg="#e0f7fa")
+
+heading = tk.Label(root, text="Add New Expense", font=("Helvetica", 18, "bold"), fg="#00796b", bg="#e0f7fa")
+heading.pack(pady=15)
+
+fields = [("Expense Title", "#ffe0b2"), ("Amount", "#f8bbd0"), ("Category", "#d1c4e9"), ("Date (YYYY-MM-DD)", "#c5e1a5")]
+entries = []
+for label, color in fields:
+    tk.Label(root, text=label, bg="#e0f7fa", font=("Arial", 12)).pack(pady=(8, 0))
+    entry = tk.Entry(root, width=30, bg=color)
+    entry.pack()
+    entries.append(entry)
+title_entry, amount_entry, category_entry, date_entry = entries
+
+tk.Button(root, text="➕ Submit Expense", command=submit_expense,
+          bg="#00796b", fg="white", font=("Arial", 12, "bold"), padx=10, pady=5).pack(pady=15)
+
+tk.Button(root, text="📋 Show Expenses", command=show_expenses_table,
+          bg="#5c6bc0", fg="white", font=("Arial", 12), width=25).pack(pady=5)
+
+tk.Button(root, text="🔍 Filter by Category", command=filter_by_category,
+          bg="#00acc1", fg="white", font=("Arial", 12), width=25).pack(pady=5)
+
+tk.Button(root, text="📊 Visualize Weekly/Monthly", command=plot_expenses,
+          bg="#26a69a", fg="white", font=("Arial", 12), width=25).pack(pady=5)
+
+tk.Button(root, text="📤 Export to CSV", command=export_to_csv,
+          bg="#ef6c00", fg="white", font=("Arial", 12), width=25).pack(pady=5)
+
+tk.Button(root, text="🤖 Predict Next Week Expense", command=predict_expenses,
+          bg="#8e24aa", fg="white", font=("Arial", 12), width=25).pack(pady=5)
+
+root.mainloop()
